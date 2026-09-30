@@ -1,0 +1,43 @@
+{
+  "name": "termglyph",
+  "version": "1.0.0",
+  "description": "Render Markdown as readable ANSI terminal output, with an optional local model client.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "main": "./dist/lib.js",
+  "types": "./dist/lib.d.ts",
+  "exports": {
+    ".": { "types": "./dist/lib.d.ts", "default": "./dist/lib.js" }
+  },
+  "bin": {
+    "tg": "./bin/tg.mjs"
+  },
+  "files": ["bin/", "dist/", "README.md", "LICENSE", ".env.example"],
+
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "tg": "node bin/tg.mjs",
+    "ask": "node bin/tg.mjs ask",
+    "snip": "node bin/tg.mjs snip",
+    "prepack": "npm run build"
+  },
+
+  "dependencies": {
+    "boxen": "^8.0.1",
+    "chalk": "^6.0.0",
+    "cli-highlight": "^2.1.11",
+    "marked": "^18.0.9",
+    "string-width": "^8.2.2",
+    "wrap-ansi": "^10.0.0"
+  },
+
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.9",
+    "typescript": "^7.0.2"
+  }
+}
