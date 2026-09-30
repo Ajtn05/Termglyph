@@ -27,6 +27,7 @@ export const theme = {
 
     code: chalk.black.bgWhite,
     link: chalk.cyan.underline,
+    math: chalk.cyanBright,
 
     bullet: chalk.cyan("•"),
     number: chalk.cyan,
@@ -39,5 +40,5 @@ export const theme = {
     tableBorder: chalk.gray,
     tableHeader: chalk.bold.whiteBright,
 
-    rule: () => chalk.gray("─".repeat(getWidth())),
+    rule: (width = getWidth()) => chalk.gray("─".repeat(width)),
 };

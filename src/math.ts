@@ -1,11 +1,9 @@
 /**
- * Best-effort LaTeX -> Unicode conversion for inline/display math that LLMs
- * frequently emit assuming a KaTeX-capable renderer (`$\rightarrow$`, `$$...$$`).
+ * Best-effort LaTeX -> Unicode conversion for math tokens recognized by marked.
  * A terminal can't typeset math, so this substitutes common macros with their
  * Unicode equivalents instead of leaving raw LaTeX source in the output.
  *
- * Only spans that contain a `\command` are touched, so plain currency like
- * "$5 to $10" is never mistaken for math.
+ * This is intentionally a readable terminal approximation, not a TeX engine.
  */
 
 const SYMBOLS: Record<string, string> = {
@@ -82,22 +80,25 @@ function scriptReplace(text: string, marker: "^" | "_", table: Record<string, st
         .replace(bare, (m, ch) => table[ch] ?? `${marker}${ch}`);
 }
 
-function convertSpan(content: string): string {
+export function convertMathExpression(content: string): string {
 
     let text = content;
 
-    // \frac{a}{b} -> a/b
-    text = text.replace(/\\d?frac\{([^{}]*)\}\{([^{}]*)\}/g, (_m, a, b) => `${a}/${b}`);
-
-    // \sqrt[n]{x} / \sqrt{x} -> the radical sign, root index kept as a prefix note
-    text = text.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, (_m, n, x) => `${n}√(${x})`);
-    text = text.replace(/\\sqrt\{([^{}]*)\}/g, (_m, x) => `√(${x})`);
+    // Resolve inner groups first so common nested fractions and roots work.
+    let previous: string;
+    do {
+        previous = text;
+        text = text.replace(/\\(?:dfrac|tfrac|frac)\{([^{}]*)\}\{([^{}]*)\}/g,
+            (_m, a: string, b: string) => `${groupIfNeeded(a)}/${groupIfNeeded(b)}`);
+        text = text.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, (_m, n, x) => `${n}√(${x})`);
+        text = text.replace(/\\sqrt\{([^{}]*)\}/g, (_m, x) => `√(${x})`);
+    } while (text !== previous);
 
     // text-like wrappers just unwrap to their contents
     text = text.replace(/\\(?:text|mathrm|mathbf|mathit|mathsf|mathtt|operatorname|boldsymbol)\{([^{}]*)\}/g, "$1");
 
     // sizing / spacing commands that have no visual meaning in a terminal
-    text = text.replace(/\\(?:left|right|big|Big|bigg|Bigg)([({[\]|])/g, "$1");
+    text = text.replace(/\\(?:left|right|big|Big|bigg|Bigg)\s*(?=[()[\]{}|.])/g, "");
     text = text.replace(/\\[,;:!]/g, " ");
     text = text.replace(/\\(?:quad|qquad)/g, "  ");
 
@@ -109,29 +110,15 @@ function convertSpan(content: string): string {
     const names = Object.keys(SYMBOLS).sort((a, b) => b.length - a.length);
     text = text.replace(new RegExp(`\\\\(${names.join("|")})(?![a-zA-Z])`, "g"), (_m, name) => SYMBOLS[name]);
 
-    // anything left over: drop the backslash rather than show raw LaTeX source
-    text = text.replace(/\\([a-zA-Z]+)/g, "$1");
+    // Unknown commands stay visible rather than silently changing their meaning.
     text = text.replace(/\\([^a-zA-Z])/g, "$1");
 
-    // leftover grouping braces are LaTeX noise at this point
-    text = text.replace(/[{}]/g, "");
+    // Keep the arguments of unsupported commands visible for later inspection.
+    if (!/\\[a-zA-Z]+/.test(text)) text = text.replace(/[{}]/g, "");
 
     return text.replace(/\s+/g, " ").trim();
 }
 
-// Require a real math signal before touching a `$...$` span — a LaTeX command,
-// or a `^`/`_` script — so plain currency ("$5 to $10") is never mistaken for math.
-const LOOKS_LIKE_MATH = /\\[a-zA-Z]|[\^_]\{?[a-zA-Z0-9]/;
-
-export function convertMath(text: string): string {
-
-    if (!text.includes("$")) return text;
-
-    text = text.replace(/\$\$([\s\S]+?)\$\$/g, (m, inner) =>
-        LOOKS_LIKE_MATH.test(inner) ? convertSpan(inner) : m);
-
-    text = text.replace(/\$(?!\s)((?:\\\$|[^$\n])+?)(?<!\\)\$/g, (m, inner) =>
-        LOOKS_LIKE_MATH.test(inner) ? convertSpan(inner) : m);
-
-    return text;
+function groupIfNeeded(value: string): string {
+    return /[+\-=/\s]/.test(value) ? `(${value})` : value;
 }

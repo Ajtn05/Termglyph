@@ -25,7 +25,7 @@ cat answer.md | tg
 tg answer.md
 ```
 
-Headings, lists, tables, blockquotes, links, fenced code, and common LaTeX math symbols are formatted for the terminal. The input cleanup also handles carriage returns and cursor redraws from streaming CLIs.
+Headings, lists, tables, blockquotes, links, and fenced code are formatted for the terminal. Inline math in `$...$` and standalone display math in `$$...$$` are converted to readable Unicode where possible. For example, `$x^2 + \alpha$` renders as `x² + α`, and `$$\frac{a+b}{c}$$` renders as `(a+b)/c`. This is a terminal approximation rather than full LaTeX typesetting; unsupported commands remain visible. Escaped dollars, code, and ordinary prices such as `$5 and $10` keep their literal text. The input cleanup also handles carriage returns and cursor redraws from streaming CLIs.
 
 ## Use from JavaScript
 

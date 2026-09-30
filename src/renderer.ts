@@ -1,10 +1,45 @@
-import { marked, Renderer, type Tokens, type Token } from "marked";
+import { Marked, Renderer, type Tokens, type Token } from "marked";
 import { highlight, supportsLanguage } from "cli-highlight";
 import boxen from "boxen";
 import wrapAnsi from "wrap-ansi";
 import stringWidth from "string-width";
 import { theme, getWidth } from "./theme.js";
-import { convertMath } from "./math.js";
+import { convertMathExpression } from "./math.js";
+
+const mathExtensions = [
+    {
+        name: "displayMath",
+        level: "block" as const,
+        start: (src: string) => src.indexOf("$$"),
+        tokenizer(src: string) {
+            const match = /^(?: {0,3})\$\$([^\n]+?)\$\$[ \t]*(?:\n|$)/.exec(src)
+                ?? /^(?: {0,3})\$\$[ \t]*\n([\s\S]+?)\n[ \t]*\$\$[ \t]*(?:\n|$)/.exec(src);
+            if (match) return { type: "displayMath", raw: match[0], text: match[1] };
+        },
+        renderer(token: Tokens.Generic) {
+            return theme.math(convertMathExpression(String(token.text))) + "\n\n";
+        },
+    },
+    {
+        name: "inlineMath",
+        level: "inline" as const,
+        start: (src: string) => src.indexOf("$"),
+        tokenizer(src: string) {
+            if (src[0] !== "$" || src[1] === "$" || !src[1] || /\s/.test(src[1])) return;
+            for (let i = 2; i < src.length && src[i] !== "\n"; i++) {
+                if (src[i] === "`") return;
+                if (src[i] !== "$") continue;
+                // A later dollar cannot close an invalid pair: doing so would
+                // swallow currency and escaped dollars between the two.
+                if (src[i - 1] === "\\" || src[i - 1] === "$" || /\s/.test(src[i - 1])) return;
+                return { type: "inlineMath", raw: src.slice(0, i + 1), text: src.slice(1, i) };
+            }
+        },
+        renderer(token: Tokens.Generic) {
+            return theme.math(convertMathExpression(String(token.text)));
+        },
+    },
+];
 
 /**
  * Renders markdown straight to ANSI terminal output.
@@ -34,10 +69,10 @@ class TerminalRenderer extends Renderer {
 
     heading({ tokens, depth }: Tokens.Heading): string {
 
-        const text = wrapAnsi(this.parser.parseInline(tokens), this.width, { trim: false, hard: true });
+        const text = wrapAnsi(cleanInlineBreaks(this.parser.parseInline(tokens)), this.width, { trim: false, hard: true });
 
         if (depth === 1) {
-            const rule = theme.rule();
+            const rule = theme.rule(this.width);
             return `${rule}\n${theme.h1(text)}\n${rule}\n\n`;
         }
 
@@ -45,12 +80,12 @@ class TerminalRenderer extends Renderer {
     }
 
     paragraph({ tokens }: Tokens.Paragraph): string {
-        const text = theme.body(this.parser.parseInline(tokens));
+        const text = theme.body(cleanInlineBreaks(this.parser.parseInline(tokens)));
         return wrapAnsi(text, this.width, { trim: false, hard: true }) + "\n\n";
     }
 
     hr(): string {
-        return theme.rule() + "\n\n";
+        return theme.rule(this.width) + "\n\n";
     }
 
     code({ text, lang }: Tokens.Code): string {
@@ -120,7 +155,7 @@ class TerminalRenderer extends Renderer {
 
         this.listDepth--;
 
-        return items + "\n" + (this.listDepth === 0 ? "\n" : "");
+        return items + (this.listDepth === 0 ? "\n\n" : "");
     }
 
     /** Not part of the marked dispatch table for our flow — list() renders items itself. */
@@ -143,12 +178,14 @@ class TerminalRenderer extends Renderer {
         const body = ownTokens
             .map(t => this.renderListItemToken(t, bodyWidth))
             .filter(Boolean)
-            .join(`\n${hangingIndent}\n`);
+            .join("\n\n");
 
-        let out = prefix + body.split("\n").join(`\n${hangingIndent}`);
+        let out = prefix + body.split("\n")
+            .map((line, i) => i === 0 || line === "" ? line : hangingIndent + line)
+            .join("\n");
 
         if (nestedLists.length) {
-            const nested = nestedLists.map(t => this.list(t)).join("").replace(/\n+$/, "\n");
+            const nested = nestedLists.map(t => this.list(t)).join("\n");
             out += "\n" + nested;
         }
 
@@ -159,7 +196,7 @@ class TerminalRenderer extends Renderer {
 
         if (token.type === "text" || token.type === "paragraph") {
             const t = token as Tokens.Text | Tokens.Paragraph;
-            const text = theme.body("tokens" in t && t.tokens ? this.parser.parseInline(t.tokens) : t.text);
+            const text = theme.body(cleanInlineBreaks("tokens" in t && t.tokens ? this.parser.parseInline(t.tokens) : t.text));
             return wrapAnsi(text, bodyWidth, { trim: false, hard: true });
         }
 
@@ -178,7 +215,7 @@ class TerminalRenderer extends Renderer {
     table(token: Tokens.Table): string {
 
         const columns = token.header.length;
-        const renderCell = (cell: Tokens.TableCell) => this.parser.parseInline(cell.tokens);
+        const renderCell = (cell: Tokens.TableCell) => cleanInlineBreaks(this.parser.parseInline(cell.tokens));
 
         const header = token.header.map(renderCell);
         const rows = token.rows.map(row => row.map(renderCell));
@@ -190,8 +227,8 @@ class TerminalRenderer extends Renderer {
             ),
         );
 
-        const budget = Math.max(columns, this.width - (columns + 1) * 3);
-        const colWidths = fitColumnWidths(naturalWidths, budget);
+        const budget = Math.max(columns, this.width - (3 * columns + 1));
+        const colWidths = fitColumnWidths(naturalWidths, budget, header.map(cell => stringWidth(cell)));
 
         const border = (left: string, mid: string, right: string, fill: string) =>
             theme.tableBorder(left + colWidths.map(w => fill.repeat(w + 2)).join(mid) + right);
@@ -227,6 +264,7 @@ class TerminalRenderer extends Renderer {
     }
 
     html({ text }: Tokens.HTML | Tokens.Tag): string {
+        if (/^<br\s*\/?\s*>$/i.test(text)) return "\n";
         return theme.dim(text);
     }
 
@@ -241,7 +279,7 @@ class TerminalRenderer extends Renderer {
         if ("tokens" in token && token.tokens?.length) {
             return this.parser.parseInline(token.tokens);
         }
-        return convertMath(token.text);
+        return decodeEntities(token.text);
     }
 
     // ---- inline level ------------------------------------------------------
@@ -268,11 +306,11 @@ class TerminalRenderer extends Renderer {
 
     link({ href, tokens }: Tokens.Link): string {
         const label = theme.link(this.parser.parseInline(tokens));
-        return hyperlink(label, href);
+        return hyperlink(label, decodeEntities(href));
     }
 
     image({ href, text }: Tokens.Image): string {
-        return hyperlink(theme.dim(`[image: ${text || href}]`), href);
+        return hyperlink(theme.dim(`[image: ${decodeEntities(text || href)}]`), decodeEntities(href));
     }
 }
 
@@ -281,9 +319,27 @@ class TerminalRenderer extends Renderer {
  * per column but guaranteeing the sum never exceeds budget even at pathologically
  * narrow terminal widths (trims from the widest columns first).
  */
-function fitColumnWidths(naturalWidths: number[], budget: number): number[] {
+function fitColumnWidths(naturalWidths: number[], budget: number, headerWidths: number[]): number[] {
 
     const total = naturalWidths.reduce((a, b) => a + b, 0);
+    if (total <= budget) return naturalWidths;
+
+    // Preserve short headers when they fit, then give remaining room to data.
+    const headerFloor = headerWidths.map(w => Math.max(1, w));
+    const headerTotal = headerFloor.reduce((a, b) => a + b, 0);
+    if (headerTotal <= budget) {
+        const widths = [...headerFloor];
+        let remaining = budget - headerTotal;
+        while (remaining > 0) {
+            const deficits = naturalWidths.map((w, i) => w - widths[i]);
+            const largest = Math.max(...deficits);
+            if (largest <= 0) break;
+            widths[deficits.indexOf(largest)]++;
+            remaining--;
+        }
+        return widths;
+    }
+
     const shrink = total > budget && total > 0 ? budget / total : 1;
 
     const preferredFloor = Math.min(4, Math.max(1, Math.floor(budget / naturalWidths.length)));
@@ -313,6 +369,28 @@ function padCell(text: string, width: number, align: "left" | "right" | "center"
     return text + " ".repeat(pad);
 }
 
+function cleanInlineBreaks(text: string): string {
+    return text.replace(/[ \t]*\n[ \t]*/g, "\n");
+}
+
+const NAMED_ENTITIES: Record<string, string> = {
+    amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0",
+};
+
+/** Decode the entities most often emitted in Markdown text and link targets. */
+function decodeEntities(text: string): string {
+    return text.replace(/&(#(?:x[0-9a-f]+|[0-9]+)|amp|lt|gt|quot|apos|nbsp);/gi, (original, entity: string) => {
+        if (entity[0] !== "#") return NAMED_ENTITIES[entity.toLowerCase()] ?? original;
+        const hex = entity[1]?.toLowerCase() === "x";
+        const value = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+        return value >= 0x20 && value <= 0x10ffff
+            && !(value >= 0x7f && value <= 0x9f)
+            && !(value >= 0xd800 && value <= 0xdfff)
+            ? String.fromCodePoint(value)
+            : "\ufffd";
+    });
+}
+
 /** OSC 8 hyperlink escape — clickable link text in terminals that support it, plain text elsewhere. */
 function hyperlink(label: string, url: string): string {
     return `]8;;${url}${label}]8;;`;
@@ -337,10 +415,11 @@ function countCodeBlocks(tokens: unknown): number {
 export function render(md: string): string {
 
     const width = getWidth();
-    const totalCodeBlocks = countCodeBlocks(marked.lexer(md, { gfm: true }));
+    const marked = new Marked({ gfm: true, breaks: false, extensions: mathExtensions });
+    const totalCodeBlocks = countCodeBlocks(marked.lexer(md));
     const renderer = new TerminalRenderer(width, totalCodeBlocks);
 
-    const out = marked.parse(md, { renderer, gfm: true, breaks: false }) as string;
+    const out = marked.parse(md, { renderer }) as string;
 
     return out
         .replace(/\n{3,}/g, "\n\n")
